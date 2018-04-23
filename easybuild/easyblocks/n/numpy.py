@@ -54,7 +54,7 @@ class EB_numpy(FortranPythonPackage):
     def extra_options():
         """Easyconfig parameters specific to numpy."""
         extra_vars = ({
-            'blas_test_time_limit': [500, "Time limit (in ms) for 1000x1000 matrix dot product BLAS test", CUSTOM],
+            'blas_test_time_limit': [20000, "Time limit (in ms) for 1000x1000 matrix dot product BLAS test", CUSTOM],
         })
         return FortranPythonPackage.extra_options(extra_vars=extra_vars)
 
