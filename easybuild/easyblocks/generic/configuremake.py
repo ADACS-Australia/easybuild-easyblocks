@@ -90,7 +90,7 @@ class ConfigureMake(EasyBlock):
             'installdir': self.installdir,
             'configopts': self.cfg['configopts'],
         }
-
+   
         (out, _) = run_cmd(cmd, log_all=True, simple=False)
 
         return out
