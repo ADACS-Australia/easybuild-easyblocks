@@ -64,7 +64,7 @@ class EB_SCOTCH(EasyBlock):
         if comp_fam == toolchain.INTELCOMP:  #@UndefinedVariable
             makefilename = 'Makefile.inc.x86-64_pc_linux2.icc'
         elif comp_fam == toolchain.GCC:  #@UndefinedVariable
-            makefilename = 'Makefile.inc.x86-64_pc_linux2'
+            makefilename = 'Makefile.inc.x86-64_pc_linux2.shlib'
         else:
             raise EasyBuildError("Unknown compiler family used: %s", comp_fam)
 
