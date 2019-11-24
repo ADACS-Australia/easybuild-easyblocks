@@ -1,5 +1,5 @@
 ##
-# Copyright 2009-2018 Ghent University
+# Copyright 2009-2019 Ghent University
 #
 # This file is part of EasyBuild,
 # originally created by the HPC team of Ghent University (http://ugent.be/hpc/en),
@@ -224,7 +224,7 @@ class EB_DOLFIN(CMakePythonPackage):
             try:
                 os.makedirs(instant_cache_dir)
                 os.makedirs(instant_error_dir)
-            except OSError, err:
+            except OSError as err:
                 raise EasyBuildError("Failed to create Instant cache/error dirs: %s", err)
 
             env_vars = [

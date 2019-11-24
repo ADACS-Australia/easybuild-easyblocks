@@ -1,5 +1,5 @@
 ##
-# Copyright 2009-2018 Ghent University
+# Copyright 2009-2019 Ghent University
 #
 # This file is part of EasyBuild,
 # originally created by the HPC team of Ghent University (http://ugent.be/hpc/en),
@@ -30,7 +30,6 @@ EasyBuild support for Trilinos, implemented as an easyblock
 import os
 import random
 import re
-import string
 
 from distutils.version import LooseVersion
 
@@ -41,6 +40,7 @@ from easybuild.tools.build_log import EasyBuildError
 from easybuild.tools.config import build_path
 from easybuild.tools.filetools import mkdir, rmtree2, symlink
 from easybuild.tools.modules import get_software_root
+from easybuild.tools.py2vs3 import ascii_letters
 from easybuild.tools.systemtools import get_shared_lib_ext
 
 
@@ -117,12 +117,21 @@ class EB_Trilinos(CMakeMake):
             if self.toolchain.comp_family() == toolchain.GCC:  #@UndefinedVariable
                 libdirs += ";%s/lib64" % get_software_root('GCC')
             self.cfg.update('configopts', '-D%s_LIBRARY_DIRS="%s"' % (dep, libdirs))
-            libs = os.getenv('%s_MT_STATIC_LIBS' % dep).split(',')
+            if self.cfg['openmp']:
+                libs = os.getenv('%s_MT_STATIC_LIBS' % dep).split(',')
+            else:
+                libs = os.getenv('%s_STATIC_LIBS' % dep).split(',')
             lib_names = ';'.join([lib_re.search(l).group(1) for l in libs])
             if self.toolchain.comp_family() == toolchain.GCC:  #@UndefinedVariable
                 # explicitely specify static lib!
                 lib_names += ";libgfortran.a"
             self.cfg.update('configopts', '-D%s_LIBRARY_NAMES="%s"' % (dep, lib_names))
+
+        # MKL
+        if get_software_root('imkl') and LooseVersion(self.version) >= LooseVersion('12.12'):
+            self.cfg.update('configopts', "-DTPL_ENABLE_MKL:BOOL=ON")
+            self.cfg.update('configopts', '-DMKL_LIBRARY_DIRS:PATH="%s/lib/intel64"' % os.getenv('MKLROOT'))
+            self.cfg.update('configopts', '-DMKL_INCLUDE_DIRS:PATH="%s/include"' % os.getenv('MKLROOT'))
 
         # UMFPACK is part of SuiteSparse
         suitesparse = get_software_root('SuiteSparse')
@@ -220,7 +229,7 @@ class EB_Trilinos(CMakeMake):
         # + if the build directory is a long path, problems like "Argument list too long" may occur
         # cfr. https://github.com/trilinos/Trilinos/issues/2434
         # so, try to create build directory with shorter path length to build in
-        salt = ''.join(random.choice(string.letters) for _ in range(5))
+        salt = ''.join(random.choice(ascii_letters) for _ in range(5))
         self.short_start_dir = os.path.join(build_path(), self.name + '-' + salt)
         if os.path.exists(self.short_start_dir):
             raise EasyBuildError("Short start directory %s for Trilinos already exists?!", self.short_start_dir)
