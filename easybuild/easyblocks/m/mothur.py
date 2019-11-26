@@ -1,5 +1,5 @@
 ##
-# Copyright 2013 Ghent University
+# Copyright 2013-2019 Ghent University
 #
 # This file is part of EasyBuild,
 # originally created by the HPC team of Ghent University (http://ugent.be/hpc/en),
@@ -88,7 +88,7 @@ class EB_Mothur(ConfigureMake):
             for filename in ['mothur', 'uchime']:
                 srcfile = os.path.join(srcdir, filename)
                 shutil.copy2(srcfile, destdir)
-        except OSError, err:
+        except OSError as err:
             raise EasyBuildError("Copying %s to installation dir %s failed: %s", srcfile, destdir, err)
 
     def sanity_check_step(self):

@@ -1,5 +1,5 @@
 ##
-# Copyright 2009-2018 Ghent University
+# Copyright 2009-2019 Ghent University
 #
 # This file is part of EasyBuild,
 # originally created by the HPC team of Ghent University (http://ugent.be/hpc/en),
@@ -40,6 +40,7 @@ from easybuild.framework.easyconfig import CUSTOM
 from easybuild.framework.easyconfig.easyconfig import get_easyblock_class
 from easybuild.tools.build_log import EasyBuildError, print_msg
 from easybuild.tools.modules import get_software_root, get_software_version
+from easybuild.tools.py2vs3 import string_type
 
 
 class Bundle(EasyBlock):
@@ -85,60 +86,72 @@ class Bundle(EasyBlock):
             if len(comp) == 3:
                 comp_specs = comp[2]
 
-            cfg = self.cfg.copy()
+            comp_cfg = self.cfg.copy()
 
             easyblock = comp_specs.get('easyblock') or self.cfg['default_easyblock']
             if easyblock is None:
-                raise EasyBuildError("No easyblock specified for component %s v%s", cfg['name'], cfg['version'])
+                raise EasyBuildError("No easyblock specified for component %s v%s", comp_cfg['name'],
+                                     comp_cfg['version'])
             elif easyblock == 'Bundle':
                 raise EasyBuildError("The Bundle easyblock can not be used to install components in a bundle")
 
-            cfg.easyblock = get_easyblock_class(easyblock, name=cfg['name'])
+            comp_cfg.easyblock = get_easyblock_class(easyblock, name=comp_cfg['name'])
 
             # make sure that extra easyconfig parameters are known, so they can be set
-            extra_opts = cfg.easyblock.extra_options()
-            cfg.extend_params(copy.deepcopy(extra_opts))
+            extra_opts = comp_cfg.easyblock.extra_options()
+            comp_cfg.extend_params(copy.deepcopy(extra_opts))
 
-            cfg['name'] = comp_name
-            cfg['version'] = comp_version
-            cfg.generate_template_values()
+            comp_cfg['name'] = comp_name
+            comp_cfg['version'] = comp_version
+            comp_cfg.generate_template_values()
 
             # do not inherit easyblock to use from parent (since that would result in an infinite loop in install_step)
-            cfg['easyblock'] = None
+            comp_cfg['easyblock'] = None
 
             # reset list of sources/source_urls/checksums
-            cfg['sources'] = cfg['source_urls'] = cfg['checksums'] = []
+            comp_cfg['sources'] = comp_cfg['source_urls'] = comp_cfg['checksums'] = []
 
             for key in self.cfg['default_component_specs']:
-                cfg[key] = self.cfg['default_component_specs'][key]
+                comp_cfg[key] = self.cfg['default_component_specs'][key]
 
             for key in comp_specs:
-                cfg[key] = comp_specs[key]
+                comp_cfg[key] = comp_specs[key]
 
             # enable resolving of templates for component-specific EasyConfig instance
-            cfg.enable_templating = True
+            comp_cfg.enable_templating = True
 
             # 'sources' is strictly required
-            if cfg['sources']:
-                # add component sources to list of sources
-                self.cfg.update('sources', cfg['sources'])
+            if comp_cfg['sources']:
+                # If per-component source URLs are provided, attach them directly to the relevant sources
+                if comp_cfg['source_urls']:
+                    for source in comp_cfg['sources']:
+                        if isinstance(source, string_type):
+                            self.cfg.update('sources', [{'filename': source, 'source_urls': comp_cfg['source_urls']}])
+                        elif isinstance(source, dict):
+                            # Update source_urls in the 'source' dict to use the one for the components
+                            # (if it doesn't already exist)
+                            if 'source_urls' not in source:
+                                source['source_urls'] = comp_cfg['source_urls']
+                            self.cfg.update('sources', [source])
+                        else:
+                            raise EasyBuildError("Source %s for component %s is neither a string nor a dict, cannot "
+                                                 "process it.", source, comp_cfg['name'])
+                else:
+                    # add component sources to list of sources
+                    self.cfg.update('sources', comp_cfg['sources'])
             else:
                 raise EasyBuildError("No sources specification for component %s v%s", comp_name, comp_version)
 
-            if cfg['source_urls']:
-                # add per-component source_urls to list of bundle source_urls, expanding templates
-                self.cfg.update('source_urls', cfg['source_urls'])
-
-            if cfg['checksums']:
-                src_cnt = len(cfg['sources'])
+            if comp_cfg['checksums']:
+                src_cnt = len(comp_cfg['sources'])
 
                 # add per-component checksums for sources to list of checksums
-                self.cfg.update('checksums', cfg['checksums'][:src_cnt])
+                self.cfg.update('checksums', comp_cfg['checksums'][:src_cnt])
 
                 # add per-component checksums for patches to list of checksums for patches
-                checksums_patches.extend(cfg['checksums'][src_cnt:])
+                checksums_patches.extend(comp_cfg['checksums'][src_cnt:])
 
-            self.comp_cfgs.append(cfg)
+            self.comp_cfgs.append(comp_cfg)
 
         self.cfg.update('checksums', checksums_patches)
 
@@ -150,7 +163,7 @@ class Bundle(EasyBlock):
 
         :return: list of strings describing checksum issues (missing checksums, wrong checksum type, etc.)
         """
-        checksum_issues = []
+        checksum_issues = super(Bundle, self).check_checksums()
 
         for comp in self.comp_cfgs:
             checksum_issues.extend(self.check_checksums_for(comp, sub="of component %s" % comp['name']))
@@ -193,8 +206,33 @@ class Bundle(EasyBlock):
 
             # need to run fetch_patches to ensure per-component patches are applied
             comp.fetch_patches()
-            # location of first unpacked source is used to determine where to apply patch(es)
-            comp.src = [{'finalpath': comp.cfg['start_dir']}]
+
+            comp.src = []
+
+            # find match entries in self.src for this component
+            for source in comp.cfg['sources']:
+                if isinstance(source, string_type):
+                    comp_src_fn = source
+                elif isinstance(source, dict):
+                    if 'filename' in source:
+                        comp_src_fn = source['filename']
+                    else:
+                        raise EasyBuildError("Encountered source file specified as dict without 'filename': %s", source)
+                else:
+                    raise EasyBuildError("Specification of unknown type for source file: %s", source)
+
+                found = False
+                for src in self.src:
+                    if src['name'] == comp_src_fn:
+                        self.log.info("Found spec for source %s for component %s: %s", comp_src_fn, comp.name, src)
+                        comp.src.append(src)
+                        found = True
+                        break
+                if not found:
+                    raise EasyBuildError("Failed to find spec for source %s for component %s", comp_src_fn, comp.name)
+
+                # location of first unpacked source is used to determine where to apply patch(es)
+                comp.src[-1]['finalpath'] = comp.cfg['start_dir']
 
             # run relevant steps
             for step_name in ['patch', 'configure', 'build', 'install']:

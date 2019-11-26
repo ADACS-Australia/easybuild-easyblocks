@@ -1,5 +1,5 @@
 ##
-# Copyright 2013 Ghent University
+# Copyright 2013-2019 Ghent University
 #
 # This file is part of EasyBuild,
 # originally created by the HPC team of Ghent University (http://ugent.be/hpc/en),
@@ -36,7 +36,7 @@ from easybuild.framework.easyconfig import CUSTOM
 from easybuild.tools.build_log import EasyBuildError
 from easybuild.tools.filetools import apply_regex_substitutions
 from easybuild.tools.run import run_cmd_qa
-from easybuild.tools.systemtools import get_shared_lib_ext
+from easybuild.tools.systemtools import get_glibc_version, get_shared_lib_ext
 
 
 class EB_Qt(ConfigureMake):
@@ -82,6 +82,33 @@ class EB_Qt(ConfigureMake):
             self.cfg.update('configopts', "-platform %s" % platform)
         else:
             raise EasyBuildError("Don't know which platform to set based on compiler family.")
+
+        if LooseVersion(self.version) >= LooseVersion('5.8'):
+            # Qt5 doesn't respect $CFLAGS, $CXXFLAGS and $LDFLAGS, but has equivalent compiler options,
+            # e.g. QMAKE_CFLAGS; see https://doc.qt.io/qt-5/qmake-variable-reference.html#qmake-cc.
+            # Since EasyBuild relies e.g. for --optarch on $CFLAGS, we need to
+            # set the equivalent QMAKE_* configure options.
+            # (see also https://github.com/easybuilders/easybuild-easyblocks/issues/1670)
+            env_to_options = {
+                'CC': 'QMAKE_CC',
+                'CFLAGS': 'QMAKE_CFLAGS',
+                'CXX': 'QMAKE_CXX',
+                'CXXFLAGS': 'QMAKE_CXXFLAGS',
+                # QMAKE_LFLAGS is not a typo, see: https://doc.qt.io/qt-5/qmake-variable-reference.html#qmake-lflags
+                'LDFLAGS': 'QMAKE_LFLAGS',
+            }
+            for env_name, option in sorted(env_to_options.items()):
+                value = os.getenv(env_name)
+                if value is not None:
+                    if env_name.endswith('FLAGS'):
+                        # For *FLAGS, we add to existing flags (e.g. those set in Qt's .pro-files).
+                        config_opt = option + '+="%s"'
+                    else:
+                        # For compilers, we replace QMAKE_CC/CXX
+                        # (otherwise, you get e.g. QMAKE_CC="g++ g++", which fails)
+                        config_opt = option + '="%s"'
+
+                    self.cfg.update('configopts', config_opt % value)
 
         # configure Qt such that xmlpatterns is also installed
         # -xmlpatterns is not a known configure option for Qt 5.x, but there xmlpatterns support is enabled by default
@@ -141,8 +168,12 @@ class EB_Qt(ConfigureMake):
         }
 
         if self.cfg['check_qtwebengine']:
-            qtwebengine_libs = ['libQt%s%s.%s' % (libversion, l, shlib_ext) for l in ['WebEngine', 'WebEngineCore']]
-            custom_paths['files'].extend([os.path.join('lib', lib) for lib in qtwebengine_libs])
+            glibc_version = get_glibc_version()
+            if LooseVersion(glibc_version) > LooseVersion("2.16"):
+                qtwebengine_libs = ['libQt%s%s.%s' % (libversion, l, shlib_ext) for l in ['WebEngine', 'WebEngineCore']]
+                custom_paths['files'].extend([os.path.join('lib', lib) for lib in qtwebengine_libs])
+            else:
+                self.log.debug("Skipping check for qtwebengine, since it requires a more recent glibc.")
 
         if LooseVersion(self.version) >= LooseVersion('4'):
             custom_paths['files'].append('bin/xmlpatterns')

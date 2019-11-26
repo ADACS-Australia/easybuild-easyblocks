@@ -1,5 +1,5 @@
 ##
-# Copyright 2009-2018 Ghent University
+# Copyright 2009-2019 Ghent University
 #
 # This file is part of EasyBuild,
 # originally created by the HPC team of Ghent University (http://ugent.be/hpc/en),
@@ -162,7 +162,7 @@ class RPackage(ExtensionEasyBlock):
         else:
             try:
                 shutil.copy2(self.src[0]['path'], self.builddir)
-            except OSError, err:
+            except OSError as err:
                 raise EasyBuildError("Failed to copy source to build dir: %s", err)
             self.ext_src = self.src[0]['name']
 

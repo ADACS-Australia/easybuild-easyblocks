@@ -1,5 +1,5 @@
 ##
-# Copyright 2009-2018 Ghent University
+# Copyright 2009-2019 Ghent University
 #
 # This file is part of EasyBuild,
 # originally created by the HPC team of Ghent University (http://ugent.be/hpc/en),
@@ -82,7 +82,7 @@ class EB_MUMPS(ConfigureMake):
             dst = os.path.join(self.cfg['start_dir'], 'Makefile.inc')
             shutil.copy2(src, dst)
             self.log.debug("Successfully copied Makefile.inc to builddir.")
-        except OSError, err:
+        except OSError as err:
             raise EasyBuildError("Copying Makefile.inc to builddir failed: %s", err)
 
         # check whether dependencies are available, and prepare
@@ -126,6 +126,22 @@ class EB_MUMPS(ConfigureMake):
             'OPTL': "$LDFLAGS %s" % optl,
             'OPTC': "$CFLAGS",
         }
+        # support sequential version, which builds a dummy MPI library mpiseq
+        if make_inc_suff == 'SEQ':
+            lmpiseq = "-L$LAPACK_LIB_DIR $LIBLAPACK -L%s/libseq -lmpiseq" % self.cfg['start_dir']
+            optl = " ".join([optl, lmpiseq])
+            mumps_make_opts.update({
+                'LSCOTCH': "-L$EBROOTSCOTCH/lib -lesmumps -lscotch -lscotcherr",
+                'ORDERINGSF': "-Dpord -Dscotch %s" % dmetis,
+                'CC': "$CC",
+                'FC': "$F77",
+                'FL': "$F77",
+                'INCSEQ': "-I%s/libseq" % self.cfg['start_dir'],
+                'LIBSEQ': lmpiseq,
+                'SCALAP': "",
+                'LIBPAR': "",
+                'OPTL': "$LDFLAGS %s" % optl,
+            })
         for (key, val) in mumps_make_opts.items():
             self.cfg.update('buildopts', '%s="%s"' % (key, val))
 
@@ -136,7 +152,11 @@ class EB_MUMPS(ConfigureMake):
                 src = os.path.join(self.cfg['start_dir'], path)
                 dst = os.path.join(self.installdir, path)
                 shutil.copytree(src, dst)
-        except OSError, err:
+            if self.toolchain.options.get('usempi', None) is False:
+                src = os.path.join(self.cfg['start_dir'], 'libseq', 'libmpiseq.a')
+                dst = os.path.join(self.installdir, 'lib', 'libmpiseq.a')
+                shutil.copy2(src, dst)
+        except OSError as err:
             raise EasyBuildError("Copying %s to installation dir %s failed: %s", src, dst, err)
 
     def sanity_check_step(self):

@@ -1,5 +1,5 @@
 ##
-# Copyright 2017-2018 Ghent University
+# Copyright 2017-2019 Ghent University
 #
 # This file is part of EasyBuild,
 # originally created by the HPC team of Ghent University (http://ugent.be/hpc/en),
@@ -31,21 +31,22 @@ EasyBuild support for building and installing TensorFlow, implemented as an easy
 """
 import glob
 import os
+import re
 import stat
 import tempfile
 from distutils.version import LooseVersion
 
 import easybuild.tools.environment as env
 import easybuild.tools.toolchain as toolchain
-from easybuild.easyblocks.generic.pythonpackage import PythonPackage
+from easybuild.easyblocks.generic.pythonpackage import PythonPackage, det_python_version
 from easybuild.easyblocks.python import EXTS_FILTER_PYTHON_PACKAGES
 from easybuild.framework.easyconfig import CUSTOM
 from easybuild.tools.build_log import EasyBuildError
-from easybuild.tools.filetools import adjust_permissions, apply_regex_substitutions, mkdir, resolve_path
-from easybuild.tools.filetools import is_readable, which, write_file
+from easybuild.tools.filetools import adjust_permissions, apply_regex_substitutions, copy_file, mkdir, resolve_path
+from easybuild.tools.filetools import is_readable, read_file, which, write_file, remove_file
 from easybuild.tools.modules import get_software_root, get_software_version
 from easybuild.tools.run import run_cmd
-from easybuild.tools.systemtools import get_os_name, get_os_version
+from easybuild.tools.systemtools import X86_64, get_cpu_architecture, get_os_name, get_os_version
 
 
 # Wrapper for Intel(MPI) compilers, where required environment variables
@@ -76,13 +77,17 @@ class EB_TensorFlow(PythonPackage):
 
     @staticmethod
     def extra_options():
+        # We only want to install mkl-dnn by default on x86_64 systems
+        with_mkl_dnn_default = get_cpu_architecture() == X86_64
         extra_vars = {
             # see https://developer.nvidia.com/cuda-gpus
             'cuda_compute_capabilities': [[], "List of CUDA compute capabilities to build with", CUSTOM],
             'path_filter': [[], "List of patterns to be filtered out in paths in $CPATH and $LIBRARY_PATH", CUSTOM],
             'with_jemalloc': [None, "Make TensorFlow use jemalloc (usually enabled by default)", CUSTOM],
-            'with_mkl_dnn': [True, "Make TensorFlow use Intel MKL-DNN", CUSTOM],
+            'with_mkl_dnn': [with_mkl_dnn_default, "Make TensorFlow use Intel MKL-DNN", CUSTOM],
+            'test_script': [None, "Script to test TensorFlow installation with", CUSTOM],
         }
+
         return PythonPackage.extra_options(extra_vars)
 
     def __init__(self, *args, **kwargs):
@@ -96,6 +101,17 @@ class EB_TensorFlow(PythonPackage):
             'use_pip': True,
         }
         self.cfg['exts_filter'] = EXTS_FILTER_PYTHON_PACKAGES
+
+        self.test_script = None
+
+        # locate test script (if specified)
+        if self.cfg['test_script']:
+            # try to locate test script via obtain_file (just like sources & patches files)
+            self.test_script = self.obtain_file(self.cfg['test_script'])
+            if self.test_script and os.path.exists(self.test_script):
+                self.log.info("Test script found: %s", self.test_script)
+            else:
+                raise EasyBuildError("Specified test script %s not found!", self.cfg['test_script'])
 
     def handle_jemalloc(self):
         """Figure out whether jemalloc support should be enabled or not."""
@@ -208,22 +224,61 @@ class EB_TensorFlow(PythonPackage):
             'TF_NEED_OPENCL': ('0', '1')[bool(opencl_root)],
             'TF_NEED_OPENCL_SYCL': '0',
             'TF_NEED_S3': '0',  # Amazon S3 File System
+            'TF_NEED_TENSORRT': '0',
             'TF_NEED_VERBS': '0',
-            'TF_NEED_TENSORRT': ('0', '1')[bool(tensorrt_root)],
             'TF_NEED_AWS': '0',  # Amazon AWS Platform
             'TF_NEED_KAFKA': '0',  # Amazon Kafka Platform
         }
         if cuda_root:
+            cuda_version = get_software_version('CUDA')
+            cuda_maj_min_ver = '.'.join(cuda_version.split('.')[:2])
+
+            # $GCC_HOST_COMPILER_PATH should be set to path of the actual compiler (not the MPI compiler wrapper)
+            if use_mpi:
+                compiler_path = which(os.getenv('CC_SEQ'))
+            else:
+                compiler_path = which(os.getenv('CC'))
+
             config_env_vars.update({
                 'CUDA_TOOLKIT_PATH': cuda_root,
-                'GCC_HOST_COMPILER_PATH': which(os.getenv('CC')),
+                'GCC_HOST_COMPILER_PATH': compiler_path,
                 'TF_CUDA_COMPUTE_CAPABILITIES': ','.join(self.cfg['cuda_compute_capabilities']),
-                'TF_CUDA_VERSION': get_software_version('CUDA'),
+                'TF_CUDA_VERSION': cuda_maj_min_ver,
             })
+
+            # for recent TensorFlow versions, $TF_CUDA_PATHS and $TF_CUBLAS_VERSION must also be set
+            if LooseVersion(self.version) >= LooseVersion('1.14'):
+
+                # figure out correct major/minor version for CUBLAS from cublas_api.h
+                cublas_api_header_glob_pattern = os.path.join(cuda_root, 'targets', '*', 'include', 'cublas_api.h')
+                matches = glob.glob(cublas_api_header_glob_pattern)
+                if len(matches) == 1:
+                    cublas_api_header_path = matches[0]
+                    cublas_api_header_txt = read_file(cublas_api_header_path)
+                else:
+                    raise EasyBuildError("Failed to isolate path to cublas_api.h: %s", matches)
+
+                cublas_ver_parts = []
+                for key in ['CUBLAS_VER_MAJOR', 'CUBLAS_VER_MINOR', 'CUBLAS_VER_PATCH']:
+                    regex = re.compile("^#define %s ([0-9]+)" % key, re.M)
+                    res = regex.search(cublas_api_header_txt)
+                    if res:
+                        cublas_ver_parts.append(res.group(1))
+                    else:
+                        raise EasyBuildError("Failed to find pattern '%s' in %s", regex.pattern, cublas_api_header_path)
+
+                config_env_vars.update({
+                    'TF_CUDA_PATHS': cuda_root,
+                    'TF_CUBLAS_VERSION': '.'.join(cublas_ver_parts),
+                })
+
             if cudnn_root:
+                cudnn_version = get_software_version('cuDNN')
+                cudnn_maj_min_patch_ver = '.'.join(cudnn_version.split('.')[:3])
+
                 config_env_vars.update({
                     'CUDNN_INSTALL_PATH': cudnn_root,
-                    'TF_CUDNN_VERSION': get_software_version('cuDNN'),
+                    'TF_CUDNN_VERSION': cudnn_maj_min_patch_ver,
                 })
             else:
                 raise EasyBuildError("TensorFlow has a strict dependency on cuDNN if CUDA is enabled")
@@ -237,6 +292,13 @@ class EB_TensorFlow(PythonPackage):
             config_env_vars.update({
                 'TF_NCCL_VERSION': nccl_version,
             })
+            if tensorrt_root:
+                tensorrt_version = get_software_version('TensorRT')
+                config_env_vars.update({
+                    'TF_NEED_TENSORRT': '1',
+                    'TENSORRT_INSTALL_PATH': tensorrt_root,
+                    'TF_TENSORRT_VERSION': tensorrt_version,
+                })
 
         for (key, val) in sorted(config_env_vars.items()):
             env.setvar(key, val)
@@ -246,6 +308,9 @@ class EB_TensorFlow(PythonPackage):
                        r"\1, '--output_base=%s', '--install_base=%s'" % (tmpdir, os.path.join(tmpdir, 'inst_base')))]
         apply_regex_substitutions('configure.py', regex_subs)
 
+        # Tell Bazel to not use $HOME/.cache/bazel at all
+        # See https://docs.bazel.build/versions/master/output_directories.html
+        env.setvar('TEST_TMPDIR', os.path.join(tmpdir, 'output_root'))
         cmd = self.cfg['preconfigopts'] + './configure ' + self.cfg['configopts']
         run_cmd(cmd, log_all=True, simple=True)
 
@@ -352,9 +417,13 @@ class EB_TensorFlow(PythonPackage):
         # this is required to make sure that Python packages included as extensions are found at build time;
         # see also https://github.com/tensorflow/tensorflow/issues/22395
         pythonpath = os.getenv('PYTHONPATH', '')
-        env.setvar('PYTHONPATH', '%s:%s' % (os.path.join(self.installdir, self.pylibdir), pythonpath))
+        env.setvar('PYTHONPATH', os.pathsep.join([os.path.join(self.installdir, self.pylibdir), pythonpath]))
 
         cmd.append('--action_env=PYTHONPATH')
+        # Also export $EBPYTHONPREFIXES to handle the multi-deps python setup
+        # See https://github.com/easybuilders/easybuild-easyblocks/pull/1664
+        if 'EBPYTHONPREFIXES' in os.environ:
+            cmd.append('--action_env=EBPYTHONPREFIXES')
 
         # use same configuration for both host and target programs, which can speed up the build
         # only done when optarch is enabled, since this implicitely assumes that host and target platform are the same
@@ -364,8 +433,10 @@ class EB_TensorFlow(PythonPackage):
 
         cmd.append(self.cfg['buildopts'])
 
-        if cuda_root:
-            cmd.append('--config=cuda')
+        # TF 2 (final) sets this in configure
+        if LooseVersion(self.version) < LooseVersion('2.0'):
+            if cuda_root:
+                cmd.append('--config=cuda')
 
         # if mkl-dnn is listed as a dependency it is used. Otherwise downloaded if with_mkl_dnn is true
         mkl_root = get_software_root('mkl-dnn')
@@ -393,11 +464,18 @@ class EB_TensorFlow(PythonPackage):
 
     def install_step(self):
         """Custom install procedure for TensorFlow."""
+
+        # avoid that pip (ab)uses $HOME/.cache/pip
+        # cfr. https://pip.pypa.io/en/stable/reference/pip_install/#caching
+        env.setvar('XDG_CACHE_HOME', tempfile.gettempdir())
+        self.log.info("Using %s as pip cache directory", os.environ['XDG_CACHE_HOME'])
+
         # find .whl file that was built, and install it using 'pip install'
         if ("-rc" in self.version):
             whl_version = self.version.replace("-rc", "rc")
         else:
             whl_version = self.version
+
         whl_paths = glob.glob(os.path.join(self.builddir, 'tensorflow-%s-*.whl' % whl_version))
         if len(whl_paths) == 1:
             # --ignore-installed is required to ensure *this* wheel is installed
@@ -412,16 +490,32 @@ class EB_TensorFlow(PythonPackage):
         else:
             raise EasyBuildError("Failed to isolate built .whl in %s: %s", whl_paths, self.builddir)
 
-        # Fix for https://github.com/tensorflow/tensorflow/issues/6341
-        # If the site-packages/google/__init__.py file is missing, make
-        # it an empty file.
-        # This fixes the "No module named google.protobuf" error that
-        # sometimes shows up during sanity_check
+        # Fix for https://github.com/tensorflow/tensorflow/issues/6341 on Python < 3.3
+        # If the site-packages/google/__init__.py file is missing, make it an empty file.
+        # This fixes the "No module named google.protobuf" error that sometimes shows up during sanity_check
+        # For Python >= 3.3 the logic is reversed: The __init__.py must not exist.
+        # See e.g. http://python-notes.curiousefficiency.org/en/latest/python_concepts/import_traps.html
         google_protobuf_dir = os.path.join(self.installdir, self.pylibdir, 'google', 'protobuf')
         google_init_file = os.path.join(self.installdir, self.pylibdir, 'google', '__init__.py')
-        if os.path.isdir(google_protobuf_dir) and not is_readable(google_init_file):
-            self.log.debug("Creating (empty) missing %s", google_init_file)
-            write_file(google_init_file, '')
+        if LooseVersion(det_python_version(self.python_cmd)) < LooseVersion('3.3'):
+            if os.path.isdir(google_protobuf_dir) and not is_readable(google_init_file):
+                self.log.debug("Creating (empty) missing %s", google_init_file)
+                write_file(google_init_file, '')
+        else:
+            if os.path.exists(google_init_file):
+                self.log.debug("Removing %s for Python >= 3.3", google_init_file)
+                remove_file(google_init_file)
+
+        # Fix cuda header paths
+        # This is needed for building custom TensorFlow ops
+        if LooseVersion(self.version) < LooseVersion('1.14'):
+            pyshortver = '.'.join(get_software_version('Python').split('.')[:2])
+            regex_subs = [(r'#include "cuda/include/', r'#include "')]
+            base_path = os.path.join(self.installdir, 'lib', 'python%s' % pyshortver, 'site-packages', 'tensorflow',
+                                     'include', 'tensorflow')
+            for header in glob.glob(os.path.join(base_path, 'stream_executor', 'cuda', 'cuda*.h')) + glob.glob(
+                    os.path.join(base_path, 'core', 'util', 'cuda*.h')):
+                apply_regex_substitutions(header, regex_subs)
 
     def sanity_check_step(self):
         """Custom sanity check for TensorFlow."""
@@ -446,11 +540,29 @@ class EB_TensorFlow(PythonPackage):
             pythonpath = os.getenv('PYTHONPATH', '')
             env.setvar('PYTHONPATH', os.pathsep.join([os.path.join(self.installdir, self.pylibdir), pythonpath]))
 
-            for mnist_py in ['mnist_softmax.py', 'mnist_with_summaries.py']:
+            mnist_pys = []
+
+            if LooseVersion(self.version) < LooseVersion('2.0'):
+                mnist_pys.append('mnist_with_summaries.py')
+
+            if LooseVersion(self.version) < LooseVersion('1.13'):
+                # mnist_softmax.py was removed in TensorFlow 1.13.x
+                mnist_pys.append('mnist_softmax.py')
+
+            for mnist_py in mnist_pys:
                 datadir = tempfile.mkdtemp(suffix='-tf-%s-data' % os.path.splitext(mnist_py)[0])
                 logdir = tempfile.mkdtemp(suffix='-tf-%s-logs' % os.path.splitext(mnist_py)[0])
                 mnist_py = os.path.join(topdir, 'tensorflow', 'examples', 'tutorials', 'mnist', mnist_py)
                 cmd = "%s %s --data_dir %s --log_dir %s" % (self.python_cmd, mnist_py, datadir, logdir)
                 run_cmd(cmd, log_all=True, simple=True, log_ok=True)
+
+            # run test script (if any)
+            if self.test_script:
+                # copy test script to build dir before running it, to avoid that a file named 'tensorflow.py'
+                # (a customized TensorFlow easyblock for example) breaks 'import tensorflow'
+                test_script = os.path.join(self.builddir, os.path.basename(self.test_script))
+                copy_file(self.test_script, test_script)
+
+                run_cmd("python %s" % test_script, log_all=True, simple=True, log_ok=True)
 
         return res

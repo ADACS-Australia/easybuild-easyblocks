@@ -1,6 +1,6 @@
 ##
-# Copyright 2015-2018 Bart Oldeman
-# Copyright 2016-2018 Forschungszentrum Juelich
+# Copyright 2015-2019 Bart Oldeman
+# Copyright 2016-2019 Forschungszentrum Juelich
 #
 # This file is triple-licensed under GPLv2 (see below), MIT, and
 # BSD three-clause licenses.
@@ -173,7 +173,7 @@ class EB_PGI(PackedBinary):
         """Custom sanity check for PGI"""
         prefix = self.pgi_install_subdir
         custom_paths = {
-            'files': [os.path.join(prefix, 'bin', x) for x in ['pgcc', 'pgc++', 'pgf77', 'pgfortran', 'siterc']],
+            'files': [os.path.join(prefix, 'bin', x) for x in ['pgcc', 'pgc++', 'pgfortran', 'siterc']],
             'dirs': [os.path.join(prefix, 'bin'), os.path.join(prefix, 'lib'),
                      os.path.join(prefix, 'include'), os.path.join(prefix, 'man')]
         }
