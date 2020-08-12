@@ -121,7 +121,7 @@ class EB_TensorRT(PythonPackage, Binary):
     def sanity_check_step(self):
         """Custom sanity check for TensorRT."""
         custom_paths = {
-            'files': ['bin/trtexec', 'lib/libnvinfer.a'],
+            'files': ['bin/trtexec', 'lib/libnvinfer_static.a'],
             'dirs': [self.pylibdir],
         }
 

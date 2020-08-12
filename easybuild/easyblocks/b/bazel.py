@@ -96,7 +96,7 @@ class EB_Bazel(EasyBlock):
             self.log.info("Not patching Bazel build scripts, installation prefix for binutils/GCC not found")
 
         # enable building in parallel
-        env.setvar('EXTRA_BAZEL_ARGS', '--jobs=%d' % self.cfg['parallel'])
+        env.setvar('EXTRA_BAZEL_ARGS', '--jobs=%d --action_env=HTTP_PROXY=%s' % self.cfg['parallel'], os.environ['HTTP_PROXY'])
 
     def build_step(self):
         """Custom build procedure for Bazel."""

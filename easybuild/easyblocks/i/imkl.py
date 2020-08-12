@@ -98,13 +98,13 @@ class EB_imkl(IntelBase):
                 debugstr = "MPI toolchain component"
             else:
                 # can't use toolchain.mpi_family, because of system toolchain
-                if get_software_root('MPICH2') or get_software_root('MVAPICH2'):
-                    self.mpi_spec = 'mpich2'
-                elif get_software_root('OpenMPI'):
-                    self.mpi_spec = 'openmpi'
-                elif not get_software_root('impi'):
-                    # no compatible MPI found: do not build cdft
-                    self.cdftlibs = []
+                #if get_software_root('MPICH2') or get_software_root('MVAPICH2'):
+                #    self.mpi_spec = 'mpich2'
+                #elif get_software_root('OpenMPI'):
+                self.mpi_spec = 'openmpi'
+            #    elif not get_software_root('impi'):
+            #        # no compatible MPI found: do not build cdft
+            #        self.cdftlibs = []
                 debugstr = "loaded MPI module"
             if self.mpi_spec:
                 self.log.debug("Determined MPI specification based on %s: %s", debugstr, self.mpi_spec)
