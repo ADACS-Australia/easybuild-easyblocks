@@ -1,5 +1,5 @@
 ##
-# Copyright 2017-2019 Ghent University
+# Copyright 2017-2020 Ghent University
 #
 # This file is part of EasyBuild,
 # originally created by the HPC team of Ghent University (http://ugent.be/hpc/en),
@@ -38,12 +38,13 @@ from distutils.version import LooseVersion
 
 import easybuild.tools.environment as env
 import easybuild.tools.toolchain as toolchain
-from easybuild.easyblocks.generic.pythonpackage import PythonPackage
+from easybuild.easyblocks.generic.pythonpackage import PythonPackage, det_python_version
 from easybuild.easyblocks.python import EXTS_FILTER_PYTHON_PACKAGES
 from easybuild.framework.easyconfig import CUSTOM
-from easybuild.tools.build_log import EasyBuildError
+from easybuild.tools.build_log import EasyBuildError, print_warning
+from easybuild.tools.config import build_option
 from easybuild.tools.filetools import adjust_permissions, apply_regex_substitutions, copy_file, mkdir, resolve_path
-from easybuild.tools.filetools import is_readable, read_file, which, write_file
+from easybuild.tools.filetools import is_readable, read_file, which, write_file, remove_file
 from easybuild.tools.modules import get_software_root, get_software_version
 from easybuild.tools.run import run_cmd
 from easybuild.tools.systemtools import X86_64, get_cpu_architecture, get_os_name, get_os_version
@@ -223,11 +224,14 @@ class EB_TensorFlow(PythonPackage):
             'TF_NEED_MPI': ('0', '1')[bool(use_mpi)],
             'TF_NEED_OPENCL': ('0', '1')[bool(opencl_root)],
             'TF_NEED_OPENCL_SYCL': '0',
+            'TF_NEED_ROCM': '0',
             'TF_NEED_S3': '0',  # Amazon S3 File System
             'TF_NEED_TENSORRT': '0',
             'TF_NEED_VERBS': '0',
             'TF_NEED_AWS': '0',  # Amazon AWS Platform
             'TF_NEED_KAFKA': '0',  # Amazon Kafka Platform
+            'TF_SET_ANDROID_WORKSPACE': '0',
+            'TF_DOWNLOAD_CLANG': '0',  # Still experimental in TF 2.1.0
         }
         if cuda_root:
             cuda_version = get_software_version('CUDA')
@@ -239,10 +243,40 @@ class EB_TensorFlow(PythonPackage):
             else:
                 compiler_path = which(os.getenv('CC'))
 
+            # list of CUDA compute capabilities to use can be specifed in two ways (where (2) overrules (1)):
+            # (1) in the easyconfig file, via the custom cuda_compute_capabilities;
+            # (2) in the EasyBuild configuration, via --cuda-compute-capabilities configuration option;
+            ec_cuda_cc = self.cfg['cuda_compute_capabilities']
+            cfg_cuda_cc = build_option('cuda_compute_capabilities')
+            cuda_cc = cfg_cuda_cc or ec_cuda_cc or []
+
+            if cfg_cuda_cc and ec_cuda_cc:
+                warning_msg = "cuda_compute_capabilities specified in easyconfig (%s) are overruled by " % ec_cuda_cc
+                warning_msg += "--cuda-compute-capabilities configuration option (%s)" % cfg_cuda_cc
+                print_warning(warning_msg)
+            elif not cuda_cc:
+                warning_msg = "No CUDA compute capabilities specified, so using TensorFlow default "
+                warning_msg += "(which may not be optimal for your system).\nYou should use "
+                warning_msg += "the --cuda-compute-capabilities configuration option or the cuda_compute_capabilities "
+                warning_msg += "easyconfig parameter to specify a list of CUDA compute capabilities to compile with."
+                print_warning(warning_msg)
+
+            # TensorFlow 1.12.1 requires compute capability >= 3.5
+            # see https://github.com/tensorflow/tensorflow/pull/25767
+            if LooseVersion(self.version) >= LooseVersion('1.12.1'):
+                faulty_comp_caps = [x for x in cuda_cc if LooseVersion(x) < LooseVersion('3.5')]
+                if faulty_comp_caps:
+                    error_msg = "TensorFlow >= 1.12.1 requires CUDA compute capabilities >= 3.5, "
+                    error_msg += "found one or more older ones: %s"
+                    raise EasyBuildError(error_msg, ', '.join(faulty_comp_caps))
+
+            if cuda_cc:
+                self.log.info("Compiling with specified list of CUDA compute capabilities: %s", ', '.join(cuda_cc))
+
             config_env_vars.update({
                 'CUDA_TOOLKIT_PATH': cuda_root,
                 'GCC_HOST_COMPILER_PATH': compiler_path,
-                'TF_CUDA_COMPUTE_CAPABILITIES': ','.join(self.cfg['cuda_compute_capabilities']),
+                'TF_CUDA_COMPUTE_CAPABILITIES': ','.join(cuda_cc),
                 'TF_CUDA_VERSION': cuda_maj_min_ver,
             })
 
@@ -326,32 +360,38 @@ class EB_TensorFlow(PythonPackage):
         else:
             raise EasyBuildError("Failed to determine installation prefix for binutils")
 
+        inc_paths, lib_paths = [], []
+
         gcc_root = get_software_root('GCCcore') or get_software_root('GCC')
         if gcc_root:
             gcc_lib64 = os.path.join(gcc_root, 'lib64')
+            lib_paths.append(gcc_lib64)
+
             gcc_ver = get_software_version('GCCcore') or get_software_version('GCC')
 
             # figure out location of GCC include files
             res = glob.glob(os.path.join(gcc_root, 'lib', 'gcc', '*', gcc_ver, 'include'))
             if res and len(res) == 1:
                 gcc_lib_inc = res[0]
+                inc_paths.append(gcc_lib_inc)
             else:
                 raise EasyBuildError("Failed to pinpoint location of GCC include files: %s", res)
 
             # make sure include-fixed directory is where we expect it to be
             gcc_lib_inc_fixed = os.path.join(os.path.dirname(gcc_lib_inc), 'include-fixed')
-            if not os.path.exists(gcc_lib_inc_fixed):
-                raise EasyBuildError("Derived directory %s does not exist", gcc_lib_inc_fixed)
+            if os.path.exists(gcc_lib_inc_fixed):
+                inc_paths.append(gcc_lib_inc_fixed)
+            else:
+                self.log.info("Derived directory %s does not exist, so discarding it", gcc_lib_inc_fixed)
 
             # also check on location of include/c++/<gcc version> directory
             gcc_cplusplus_inc = os.path.join(gcc_root, 'include', 'c++', gcc_ver)
-            if not os.path.exists(gcc_cplusplus_inc):
+            if os.path.exists(gcc_cplusplus_inc):
+                inc_paths.append(gcc_cplusplus_inc)
+            else:
                 raise EasyBuildError("Derived directory %s does not exist", gcc_cplusplus_inc)
         else:
             raise EasyBuildError("Failed to determine installation prefix for GCC")
-
-        inc_paths = [gcc_lib_inc, gcc_lib_inc_fixed, gcc_cplusplus_inc]
-        lib_paths = [gcc_lib64]
 
         cuda_root = get_software_root('CUDA')
         if cuda_root:
@@ -406,8 +446,17 @@ class EB_TensorFlow(PythonPackage):
         # https://docs.bazel.build/versions/master/user-manual.html#flag--verbose_failures
         cmd.extend(['--subcommands', '--verbose_failures'])
 
-        # limit the number of parallel jobs running simultaneously (useful on KNL)...
-        cmd.append('--jobs=%s' % self.cfg['parallel'])
+        # Disable support of AWS platform via config switch introduced in 1.12.1
+        if LooseVersion(self.version) >= LooseVersion('1.12.1'):
+            cmd.append('--config=noaws')
+
+        # Bazel seems to not be able to handle a large amount of parallel jobs, e.g. 176 on some Power machines,
+        # and will hang forever building the TensorFlow package.
+        # So limit to something high but still reasonable while allowing ECs to overwrite it
+        parallel = self.cfg['parallel']
+        if self.cfg['maxparallel'] is None:
+            parallel = min(parallel, 64)
+        cmd.append('--jobs=%s' % parallel)
 
         if self.toolchain.options.get('pic', None):
             cmd.append('--copt="-fPIC"')
@@ -425,6 +474,9 @@ class EB_TensorFlow(PythonPackage):
         if 'EBPYTHONPREFIXES' in os.environ:
             cmd.append('--action_env=EBPYTHONPREFIXES')
 
+        # Ignore user environment for Python
+        cmd.append('--action_env=PYTHONNOUSERSITE=1')
+
         # use same configuration for both host and target programs, which can speed up the build
         # only done when optarch is enabled, since this implicitely assumes that host and target platform are the same
         # see https://docs.bazel.build/versions/master/guide.html#configurations
@@ -433,12 +485,10 @@ class EB_TensorFlow(PythonPackage):
 
         cmd.append(self.cfg['buildopts'])
 
-        # building TensorFlow v2.0 requires passing --config=v2 to "bazel build" command...
-        if LooseVersion(self.version) >= LooseVersion('2.0'):
-            cmd.append('--config=v2')
-
-        if cuda_root:
-            cmd.append('--config=cuda')
+        # TF 2 (final) sets this in configure
+        if LooseVersion(self.version) < LooseVersion('2.0'):
+            if cuda_root:
+                cmd.append('--config=cuda')
 
         # if mkl-dnn is listed as a dependency it is used. Otherwise downloaded if with_mkl_dnn is true
         mkl_root = get_software_root('mkl-dnn')
@@ -479,6 +529,8 @@ class EB_TensorFlow(PythonPackage):
             whl_version = self.version
 
         whl_paths = glob.glob(os.path.join(self.builddir, 'tensorflow-%s-*.whl' % whl_version))
+        if not whl_paths:
+            whl_paths = glob.glob(os.path.join(self.builddir, 'tensorflow-*.whl'))
         if len(whl_paths) == 1:
             # --ignore-installed is required to ensure *this* wheel is installed
             cmd = "pip install --ignore-installed --prefix=%s %s" % (self.installdir, whl_paths[0])
@@ -492,16 +544,32 @@ class EB_TensorFlow(PythonPackage):
         else:
             raise EasyBuildError("Failed to isolate built .whl in %s: %s", whl_paths, self.builddir)
 
-        # Fix for https://github.com/tensorflow/tensorflow/issues/6341
-        # If the site-packages/google/__init__.py file is missing, make
-        # it an empty file.
-        # This fixes the "No module named google.protobuf" error that
-        # sometimes shows up during sanity_check
+        # Fix for https://github.com/tensorflow/tensorflow/issues/6341 on Python < 3.3
+        # If the site-packages/google/__init__.py file is missing, make it an empty file.
+        # This fixes the "No module named google.protobuf" error that sometimes shows up during sanity_check
+        # For Python >= 3.3 the logic is reversed: The __init__.py must not exist.
+        # See e.g. http://python-notes.curiousefficiency.org/en/latest/python_concepts/import_traps.html
         google_protobuf_dir = os.path.join(self.installdir, self.pylibdir, 'google', 'protobuf')
         google_init_file = os.path.join(self.installdir, self.pylibdir, 'google', '__init__.py')
-        if os.path.isdir(google_protobuf_dir) and not is_readable(google_init_file):
-            self.log.debug("Creating (empty) missing %s", google_init_file)
-            write_file(google_init_file, '')
+        if LooseVersion(det_python_version(self.python_cmd)) < LooseVersion('3.3'):
+            if os.path.isdir(google_protobuf_dir) and not is_readable(google_init_file):
+                self.log.debug("Creating (empty) missing %s", google_init_file)
+                write_file(google_init_file, '')
+        else:
+            if os.path.exists(google_init_file):
+                self.log.debug("Removing %s for Python >= 3.3", google_init_file)
+                remove_file(google_init_file)
+
+        # Fix cuda header paths
+        # This is needed for building custom TensorFlow ops
+        if LooseVersion(self.version) < LooseVersion('1.14'):
+            pyshortver = '.'.join(get_software_version('Python').split('.')[:2])
+            regex_subs = [(r'#include "cuda/include/', r'#include "')]
+            base_path = os.path.join(self.installdir, 'lib', 'python%s' % pyshortver, 'site-packages', 'tensorflow',
+                                     'include', 'tensorflow')
+            for header in glob.glob(os.path.join(base_path, 'stream_executor', 'cuda', 'cuda*.h')) + glob.glob(
+                    os.path.join(base_path, 'core', 'util', 'cuda*.h')):
+                apply_regex_substitutions(header, regex_subs)
 
     def sanity_check_step(self):
         """Custom sanity check for TensorFlow."""
