@@ -42,7 +42,7 @@ from distutils.version import LooseVersion
 from easybuild.easyblocks.generic.cmakemake import CMakeMake
 from easybuild.framework.easyconfig import CUSTOM
 from easybuild.tools import run
-from easybuild.tools.build_log import EasyBuildError
+from easybuild.tools.build_log import EasyBuildError, print_warning
 from easybuild.tools.config import build_option
 from easybuild.tools.filetools import apply_regex_substitutions, change_dir, mkdir
 from easybuild.tools.modules import get_software_root
@@ -179,6 +179,9 @@ class EB_Clang(CMakeMake):
     def configure_step(self):
         """Run CMake for stage 1 Clang."""
 
+        if all(dep['name'] != 'ncurses' for dep in self.cfg['dependencies']):
+            print_warning('Clang requires ncurses to run, did you forgot to add it to dependencies?')
+
         self.llvm_obj_dir_stage1 = os.path.join(self.builddir, 'llvm.obj.1')
         if self.cfg['bootstrap']:
             self.llvm_obj_dir_stage2 = os.path.join(self.builddir, 'llvm.obj.2')
@@ -219,7 +222,7 @@ class EB_Clang(CMakeMake):
         # If that doesn't work, try with GCC
         if gcc_prefix is None:
             gcc_prefix = get_software_root('GCC')
-        
+
         # If that doesn't work either, print error and exit
         if gcc_prefix is None:
             raise EasyBuildError("Can't find GCC or GCCcore to use")
@@ -298,12 +301,12 @@ class EB_Clang(CMakeMake):
             for patchfile in patchfiles:
                 cmakelists = os.path.join(self.llvm_src_dir, 'projects/compiler-rt', patchfile, 'CMakeLists.txt')
                 if os.path.exists(cmakelists):
-                    regex_subs = [('.*add_subdirectory\(lit_tests\).*', '')]
+                    regex_subs = [(r'.*add_subdirectory\(lit_tests\).*', '')]
                     apply_regex_substitutions(cmakelists, regex_subs)
 
             # There is a common part seperate for the specific saniters, we disable all the common tests
             cmakelists = os.path.join('projects', 'compiler-rt', 'lib', 'sanitizer_common', 'CMakeLists.txt')
-            regex_subs = [('.*add_subdirectory\(tests\).*', '')]
+            regex_subs = [(r'.*add_subdirectory\(tests\).*', '')]
             apply_regex_substitutions(cmakelists, regex_subs)
 
         else:
@@ -433,7 +436,8 @@ class EB_Clang(CMakeMake):
         if LooseVersion(self.version) >= LooseVersion('3.8'):
             custom_paths['files'].extend(["lib/libomp.%s" % shlib_ext, "lib/clang/%s/include/omp.h" % self.version])
 
-        super(EB_Clang, self).sanity_check_step(custom_paths=custom_paths)
+        custom_commands = ['clang --help', 'clang++ --help', 'llvm-config --cxxflags']
+        super(EB_Clang, self).sanity_check_step(custom_paths=custom_paths, custom_commands=custom_commands)
 
     def make_module_extra(self):
         """Custom variables for Clang module."""

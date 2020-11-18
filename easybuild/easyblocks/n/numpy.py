@@ -55,7 +55,7 @@ class EB_numpy(FortranPythonPackage):
     def extra_options():
         """Easyconfig parameters specific to numpy."""
         extra_vars = ({
-            'blas_test_time_limit': [500, "Time limit (in ms) for 1000x1000 matrix dot product BLAS test", CUSTOM],
+            'blas_test_time_limit': [20000, "Time limit (in ms) for 1000x1000 matrix dot product BLAS test", CUSTOM],
         })
         return FortranPythonPackage.extra_options(extra_vars=extra_vars)
 
@@ -244,12 +244,12 @@ class EB_numpy(FortranPythonPackage):
 
         # fetch result
         time_msec = None
-        msec_re = re.compile("\d+ loops, best of \d+: (?P<time>[0-9.]+) msec per loop")
+        msec_re = re.compile(r"\d+ loops, best of \d+: (?P<time>[0-9.]+) msec per loop")
         res = msec_re.search(out)
         if res:
             time_msec = float(res.group('time'))
         else:
-            sec_re = re.compile("\d+ loops, best of \d+: (?P<time>[0-9.]+) sec per loop")
+            sec_re = re.compile(r"\d+ loops, best of \d+: (?P<time>[0-9.]+) sec per loop")
             res = sec_re.search(out)
             if res:
                 time_msec = 1000 * float(res.group('time'))
