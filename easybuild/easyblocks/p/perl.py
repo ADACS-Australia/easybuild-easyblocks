@@ -129,7 +129,7 @@ class EB_Perl(ConfigureMake):
         majver = self.version.split('.')[0]
         custom_paths = {
             'files': [os.path.join('bin', x) for x in ['perl', 'perldoc']],
-            'dirs': ['lib/perl%s/%s' % (majver, self.version), 'man']
+            'dirs': ['lib/%s/' % (self.version), 'man']
         }
         super(EB_Perl, self).sanity_check_step(custom_paths=custom_paths)
 
