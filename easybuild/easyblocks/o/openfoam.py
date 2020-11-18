@@ -50,7 +50,7 @@ from easybuild.tools.build_log import EasyBuildError
 from easybuild.tools.filetools import adjust_permissions, apply_regex_substitutions, mkdir
 from easybuild.tools.modules import get_software_root, get_software_version
 from easybuild.tools.run import run_cmd, run_cmd_qa
-from easybuild.tools.systemtools import get_shared_lib_ext
+from easybuild.tools.systemtools import get_shared_lib_ext, get_cpu_architecture, AARCH64
 
 
 class EB_OpenFOAM(EasyBlock):
@@ -330,25 +330,8 @@ class EB_OpenFOAM(EasyBlock):
                 cmd += ' -log'
             run_cmd(cmd_tmpl % cmd, log_all=True, simple=True, log_output=True)
 
-    def install_step(self):
-        """Building was performed in install dir, so just fix permissions."""
-
-        # fix permissions of OpenFOAM dir
-        fullpath = os.path.join(self.installdir, self.openfoamdir)
-        adjust_permissions(fullpath, stat.S_IROTH, add=True, recursive=True, ignore_errors=True)
-        adjust_permissions(fullpath, stat.S_IXOTH, add=True, recursive=True, onlydirs=True, ignore_errors=True)
-
-        # fix permissions of ThirdParty dir and subdirs (also for 2.x)
-        # if the thirdparty tarball is installed
-        fullpath = os.path.join(self.installdir, self.thrdpartydir)
-        if os.path.exists(fullpath):
-            adjust_permissions(fullpath, stat.S_IROTH, add=True, recursive=True, ignore_errors=True)
-            adjust_permissions(fullpath, stat.S_IXOTH, add=True, recursive=True, onlydirs=True, ignore_errors=True)
-
-    def sanity_check_step(self):
-        """Custom sanity check for OpenFOAM"""
-        shlib_ext = get_shared_lib_ext()
-
+    def det_psubdir(self):
+        """Determine the platform-specific installation directory for OpenFOAM."""
         # OpenFOAM >= 3.0.0 can use 64 bit integers
         # same goes for OpenFOAM-Extend >= 4.1
         if 'extend' in self.name.lower():
@@ -364,7 +347,52 @@ class EB_OpenFOAM(EasyBlock):
         else:
             int_size = ''
 
-        psubdir = "linux64%sDP%s%s" % (self.wm_compiler, int_size, self.build_type)
+        archpart = '64'
+        if get_cpu_architecture() == AARCH64:
+            # Variants have different abbreviations for ARM64...
+            if self.looseversion < LooseVersion("100"):
+                archpart = 'Arm64'
+            else:
+                archpart = 'ARM64'
+
+        psubdir = "linux%s%sDP%s%s" % (archpart, self.wm_compiler, int_size, self.build_type)
+        return psubdir
+
+    def install_step(self):
+        """Building was performed in install dir, so just fix permissions."""
+
+        # fix permissions of OpenFOAM dir
+        fullpath = os.path.join(self.installdir, self.openfoamdir)
+        adjust_permissions(fullpath, stat.S_IROTH, add=True, recursive=True, ignore_errors=True)
+        adjust_permissions(fullpath, stat.S_IXOTH, add=True, recursive=True, onlydirs=True, ignore_errors=True)
+
+        # fix permissions of ThirdParty dir and subdirs (also for 2.x)
+        # if the thirdparty tarball is installed
+        fullpath = os.path.join(self.installdir, self.thrdpartydir)
+        if os.path.exists(fullpath):
+            adjust_permissions(fullpath, stat.S_IROTH, add=True, recursive=True, ignore_errors=True)
+            adjust_permissions(fullpath, stat.S_IXOTH, add=True, recursive=True, onlydirs=True, ignore_errors=True)
+
+        # create symlinks in the lib directory to all libraries in the mpi subdirectory
+        # to make sure they take precedence over the libraries in the dummy subdirectory
+        shlib_ext = get_shared_lib_ext()
+        psubdir = self.det_psubdir()
+        openfoam_extend_v3 = 'extend' in self.name.lower() and self.looseversion >= LooseVersion('3.0')
+        if openfoam_extend_v3 or self.looseversion < LooseVersion("2"):
+            libdir = os.path.join(self.installdir, self.openfoamdir, "lib", psubdir)
+        else:
+            libdir = os.path.join(self.installdir, self.openfoamdir, "platforms", psubdir, "lib")
+        mpilibsdir = os.path.join(libdir, "mpi")
+        if os.path.exists(mpilibsdir):
+            for lib in glob.glob(os.path.join(mpilibsdir, "*.%s" % shlib_ext)):
+                libname = os.path.basename(lib)
+                dst = os.path.join(libdir, libname)
+                os.symlink(os.path.join("mpi", libname), dst)
+
+    def sanity_check_step(self):
+        """Custom sanity check for OpenFOAM"""
+        shlib_ext = get_shared_lib_ext()
+        psubdir = self.det_psubdir()
 
         openfoam_extend_v3 = 'extend' in self.name.lower() and self.looseversion >= LooseVersion('3.0')
         if openfoam_extend_v3 or self.looseversion < LooseVersion("2"):
