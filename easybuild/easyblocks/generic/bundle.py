@@ -1,5 +1,5 @@
 ##
-# Copyright 2009-2020 Ghent University
+# Copyright 2009-2021 Ghent University
 #
 # This file is part of EasyBuild,
 # originally created by the HPC team of Ghent University (http://ugent.be/hpc/en),
@@ -90,6 +90,9 @@ class Bundle(EasyBlock):
 
             comp_cfg = self.cfg.copy()
 
+            comp_cfg['name'] = comp_name
+            comp_cfg['version'] = comp_version
+
             easyblock = comp_specs.get('easyblock') or self.cfg['default_easyblock']
             if easyblock is None:
                 raise EasyBuildError("No easyblock specified for component %s v%s", comp_cfg['name'],
@@ -103,8 +106,6 @@ class Bundle(EasyBlock):
             extra_opts = comp_cfg.easyblock.extra_options()
             comp_cfg.extend_params(copy.deepcopy(extra_opts))
 
-            comp_cfg['name'] = comp_name
-            comp_cfg['version'] = comp_version
             comp_cfg.generate_template_values()
 
             # do not inherit easyblock to use from parent (since that would result in an infinite loop in install_step)
@@ -179,15 +180,19 @@ class Bundle(EasyBlock):
         """Patch step must be a no-op for bundle, since there are no top-level sources/patches."""
         pass
 
+    def get_altroot_and_altversion(self):
+        """Get altroot and altversion, if they are defined"""
+        altroot = None
+        if self.cfg['altroot']:
+            altroot = get_software_root(self.cfg['altroot'])
+        altversion = None
+        if self.cfg['altversion']:
+            altversion = get_software_version(self.cfg['altversion'])
+        return altroot, altversion
+
     def configure_step(self):
         """Collect altroot/altversion info."""
-        # pick up altroot/altversion, if they are defined
-        self.altroot = None
-        if self.cfg['altroot']:
-            self.altroot = get_software_root(self.cfg['altroot'])
-        self.altversion = None
-        if self.cfg['altversion']:
-            self.altversion = get_software_version(self.cfg['altversion'])
+        self.altroot, self.altversion = self.get_altroot_and_altversion()
 
     def build_step(self):
         """Do nothing."""
@@ -268,6 +273,9 @@ class Bundle(EasyBlock):
 
     def make_module_extra(self, *args, **kwargs):
         """Set extra stuff in module file, e.g. $EBROOT*, $EBVERSION*, etc."""
+        if not self.altroot and not self.altversion:
+            # check for altroot and altversion (needed here for a module only build)
+            self.altroot, self.altversion = self.get_altroot_and_altversion()
         if 'altroot' not in kwargs:
             kwargs['altroot'] = self.altroot
         if 'altversion' not in kwargs:
