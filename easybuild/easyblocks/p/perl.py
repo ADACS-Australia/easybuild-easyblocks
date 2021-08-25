@@ -1,5 +1,5 @@
 ##
-# Copyright 2009-2020 Ghent University
+# Copyright 2009-2021 Ghent University
 #
 # This file is part of EasyBuild,
 # originally created by the HPC team of Ghent University (http://ugent.be/hpc/en),
@@ -33,7 +33,8 @@ import os
 from easybuild.easyblocks.generic.configuremake import ConfigureMake
 from easybuild.framework.easyconfig import CUSTOM
 from easybuild.tools.config import build_option
-from easybuild.tools.environment import unset_env_vars
+from easybuild.tools.environment import setvar, unset_env_vars
+from easybuild.tools.modules import get_software_root
 from easybuild.tools.py2vs3 import string_type
 from easybuild.tools.run import run_cmd
 
@@ -90,6 +91,18 @@ class EB_Perl(ConfigureMake):
         if sysroot:
             configopts.append('-Dsysroot=%s' % sysroot)
 
+            configopts.append('-Dlocincpth="%s"' % os.path.join(sysroot, 'usr', 'include'))
+
+            # also specify 'lib*' subdirectories to consider in specified sysroot, via glibpth configure option;
+            # we can list both lib64 and lib here, the Configure script will eliminate non-existing paths...
+            sysroot_lib_paths = [
+                os.path.join(sysroot, 'lib64'),
+                os.path.join(sysroot, 'lib'),
+                os.path.join(sysroot, 'usr', 'lib64'),
+                os.path.join(sysroot, 'usr', 'lib'),
+            ]
+            configopts.append('-Dglibpth="%s"' % ' '.join(sysroot_lib_paths))
+
         configopts = (' '.join(configopts)) % {'installdir': self.installdir}
 
         # if $COLUMNS is set to 0, 'ls' produces a warning like:
@@ -124,12 +137,22 @@ class EB_Perl(ConfigureMake):
         self.cfg['exts_defaultclass'] = "PerlModule"
         self.cfg['exts_filter'] = EXTS_FILTER_PERL_MODULES
 
+        sysroot = build_option('sysroot')
+        if sysroot:
+            # define $OPENSSL_PREFIX to ensure that Net-SSLeay extension picks up OpenSSL
+            # from specified sysroot rather than from host OS
+            setvar('OPENSSL_PREFIX', sysroot)
+
     def sanity_check_step(self):
         """Custom sanity check for Perl."""
         majver = self.version.split('.')[0]
+        dirs = ['lib/perl%s/%s' % (majver, self.version)]
+        if get_software_root('groff'):
+            dirs.extend(['man'])
+
         custom_paths = {
             'files': [os.path.join('bin', x) for x in ['perl', 'perldoc']],
-            'dirs': ['lib/%s/' % (self.version), 'man']
+            'dirs': dirs,
         }
         super(EB_Perl, self).sanity_check_step(custom_paths=custom_paths)
 
