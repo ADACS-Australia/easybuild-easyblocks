@@ -28,6 +28,7 @@ EasyBuild support for building and installing TensorFlow, implemented as an easy
 @author: Kenneth Hoste (HPC-UGent)
 @author: Ake Sandgren (Umea University)
 @author: Damian Alvarez (Forschungzentrum Juelich GmbH)
+@author: Alexander Grund (TU Dresden)
 """
 import glob
 import os
@@ -148,7 +149,7 @@ def get_system_libs_for_version(tf_version, as_valid_libs=False):
         ('LMDB', '2.0.0:'): 'lmdb',
         ('NASM', '2.0.0:'): 'nasm',
         ('nsync', '2.0.0:'): 'nsync',
-        ('PCRE', '2.0.0:'): 'pcre',
+        ('PCRE', '2.0.0:2.6.0'): 'pcre',
         ('protobuf', '2.0.0:'): 'com_google_protobuf',
         ('pybind11', '2.2.0:'): 'pybind11',
         ('snappy', '2.0.0:'): 'snappy',
@@ -213,13 +214,13 @@ class EB_TensorFlow(PythonPackage):
 
     @staticmethod
     def extra_options():
-        # We only want to install mkl-dnn by default on x86_64 systems
-        with_mkl_dnn_default = get_cpu_architecture() == X86_64
         extra_vars = {
             'path_filter': [[], "List of patterns to be filtered out in paths in $CPATH and $LIBRARY_PATH", CUSTOM],
             'with_jemalloc': [None, "Make TensorFlow use jemalloc (usually enabled by default). " +
                                     "Unsupported starting at TensorFlow 1.12!", CUSTOM],
-            'with_mkl_dnn': [with_mkl_dnn_default, "Make TensorFlow use Intel MKL-DNN", CUSTOM],
+            'with_mkl_dnn': [None, "Make TensorFlow use Intel MKL-DNN / oneDNN and configure with --config=mkl "
+                                   "(enabled by default where supported for TensorFlow versions before 2.4.0)",
+                             CUSTOM],
             'with_xla': [None, "Enable XLA JIT compiler for possible runtime optimization of models", CUSTOM],
             'test_script': [None, "Script to test TensorFlow installation with", CUSTOM],
             'test_targets': [[], "List of Bazel targets which should be run during the test step", CUSTOM],
@@ -748,13 +749,18 @@ class EB_TensorFlow(PythonPackage):
                 '--host_jvm_args=-Xmx%sm' % jvm_max_memory
             ])
 
-        # build with optimization enabled
-        # cfr. https://docs.bazel.build/versions/master/user-manual.html#flag--compilation_mode
-        self.target_opts.append('--compilation_mode=opt')
+        if self.toolchain.options.get('debug', None):
+            self.target_opts.append('--strip=never')
+            self.target_opts.append('--compilation_mode=dbg')
+            self.target_opts.append('--copt="-Og"')
+        else:
+            # build with optimization enabled
+            # cfr. https://docs.bazel.build/versions/master/user-manual.html#flag--compilation_mode
+            self.target_opts.append('--compilation_mode=opt')
 
-        # select 'opt' config section (this is *not* the same as --compilation_mode=opt!)
-        # https://docs.bazel.build/versions/master/user-manual.html#flag--config
-        self.target_opts.append('--config=opt')
+            # select 'opt' config section (this is *not* the same as --compilation_mode=opt!)
+            # https://docs.bazel.build/versions/master/user-manual.html#flag--config
+            self.target_opts.append('--config=opt')
 
         # make Bazel print full command line + make it verbose on failures
         # https://docs.bazel.build/versions/master/user-manual.html#flag--subcommands
@@ -797,13 +803,33 @@ class EB_TensorFlow(PythonPackage):
             if self._with_cuda:
                 self.target_opts.append('--config=cuda')
 
-        # if mkl-dnn is listed as a dependency it is used. Otherwise downloaded if with_mkl_dnn is true
+        # note: using --config=mkl results in a significantly different build, with a different
+        # threading model (which may lead to thread oversubscription and significant performance loss,
+        # see https://github.com/easybuilders/easybuild-easyblocks/issues/2577) and different
+        # runtime behavior w.r.t. GPU vs CPU execution of functions like tf.matmul
+        # (see https://github.com/easybuilders/easybuild-easyconfigs/issues/14120),
+        # so make sure you really know you want to use this!
+
+        # auto-enable use of MKL-DNN/oneDNN and --config=mkl when possible if with_mkl_dnn is left unspecified;
+        # only do this for TensorFlow versions older than 2.4.0, since more recent versions
+        # oneDNN is used automatically for x86_64 systems (and mkl-dnn is no longer a dependency);
+        if self.cfg['with_mkl_dnn'] is None and LooseVersion(self.version) < LooseVersion('2.4.0'):
+            cpu_arch = get_cpu_architecture()
+            if cpu_arch == X86_64:
+                # Supported on x86 since forever
+                self.cfg['with_mkl_dnn'] = True
+                self.log.info("Auto-enabled use of MKL-DNN on %s CPU architecture", cpu_arch)
+            else:
+                self.log.info("Not enabling use of MKL-DNN on %s CPU architecture", cpu_arch)
+
+        # if mkl-dnn is listed as a dependency it is used
         mkl_root = get_software_root('mkl-dnn')
         if mkl_root:
             self.target_opts.append('--config=mkl')
             env.setvar('TF_MKL_ROOT', mkl_root)
         elif self.cfg['with_mkl_dnn']:
-            # this makes TensorFlow use mkl-dnn (cfr. https://github.com/01org/mkl-dnn)
+            # this makes TensorFlow use mkl-dnn (cfr. https://github.com/01org/mkl-dnn),
+            # and download it if needed
             self.target_opts.append('--config=mkl')
 
         # Compose final command
@@ -851,11 +877,14 @@ class EB_TensorFlow(PythonPackage):
                 num_gpus_to_use = 0
             else:
                 # determine number of available GPUs via nvidia-smi command, fall back to just 1 GPU
-                (out, ec) = run_cmd("nvidia-smi --list-gpus", log_all=True, regexp=False)
+                # Note: Disable logging to also disable the error handling in run_cmd and do it explicitly below
+                (out, ec) = run_cmd("nvidia-smi --list-gpus", log_ok=False, log_all=False, regexp=False)
                 try:
                     if ec != 0:
-                        raise RuntimeError("nvidia-smi returned exit code %s" % ec)
-                    gpu_ct = sum(line.startswith('GPU ') for line in out.strip().split('\n'))
+                        raise RuntimeError("nvidia-smi returned exit code %s with output:\n%s" % (ec, out))
+                    else:
+                        self.log.info('nvidia-smi succeeded with output:\n%s' % out)
+                        gpu_ct = sum(line.startswith('GPU ') for line in out.strip().split('\n'))
                 except (RuntimeError, ValueError) as err:
                     self.log.warning("Failed to get the number of GPUs on this system: %s", err)
                     gpu_ct = 0
@@ -969,12 +998,9 @@ class EB_TensorFlow(PythonPackage):
                         self.log.warning('Test %s failed with output\n%s', test_name,
                                          read_file(log_path, log_error=False))
                 if failed_tests:
-                    raise EasyBuildError(
-                        'At least %s %s tests failed:\n%s',
-                        len(failed_tests), device, ', '.join(failed_tests)
-                    )
-                else:
-                    raise EasyBuildError(fail_msg)
+                    fail_msg = 'At least %s %s tests failed:\n%s' % (
+                        len(failed_tests), device, ', '.join(failed_tests))
+                self.report_test_failure(fail_msg)
             else:
                 self.log.info('Tests on %s succeeded with output:\n%s', device, stdouterr)
 
@@ -1031,6 +1057,9 @@ class EB_TensorFlow(PythonPackage):
 
     def sanity_check_step(self):
         """Custom sanity check for TensorFlow."""
+        if self.python_cmd is None:
+            self.prepare_python()
+
         custom_paths = {
             'files': ['bin/tensorboard'],
             'dirs': [self.pylibdir],

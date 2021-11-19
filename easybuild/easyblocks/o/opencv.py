@@ -26,6 +26,7 @@
 EasyBuild support for building and installing OpenCV, implemented as an easyblock
 
 @author: Kenneth Hoste (Ghent University)
+@author: Simon Branford (University of Birmingham)
 """
 import glob
 import os
@@ -37,7 +38,7 @@ from easybuild.framework.easyconfig import CUSTOM
 from easybuild.tools.build_log import EasyBuildError
 from easybuild.tools.config import build_option
 from easybuild.tools.filetools import compute_checksum, copy
-from easybuild.tools.modules import get_software_libdir, get_software_root
+from easybuild.tools.modules import get_software_libdir, get_software_root, get_software_version
 from easybuild.tools.systemtools import X86_64, get_cpu_architecture, get_cpu_features, get_shared_lib_ext
 from easybuild.tools.toolchain.compiler import OPTARCH_GENERIC
 
@@ -148,6 +149,17 @@ class EB_OpenCV(CMakeMake):
                     libdir = get_software_libdir(dep, only_one=True)
                     lib_path = os.path.join(dep_root, libdir, lib_file)
                     self.cfg.update('configopts', '-D%s_LIBRARY=%s' % (opt_name, lib_path))
+
+        # GTK+3 is used by default, use GTK+2 or none explicitely to avoid picking up a system GTK
+        if get_software_root('GTK+'):
+            if LooseVersion(get_software_version('GTK+')) < LooseVersion('3.0'):
+                self.cfg.update('configopts', '-DWITH_GTK_2_X=ON')
+        elif get_software_root('GTK3'):
+            pass
+        elif get_software_root('GTK2'):
+            self.cfg.update('configopts', '-DWITH_GTK_2_X=ON')
+        else:
+            self.cfg.update('configopts', '-DWITH_GTK=OFF')
 
         # configure optimisation for CPU architecture
         # see https://github.com/opencv/opencv/wiki/CPU-optimizations-build-options

@@ -58,7 +58,7 @@ setup(
     version=str(VERSION),
     author="EasyBuild community",
     author_email="easybuild@lists.ugent.be",
-    description="""Python modules which implement support for installing particular
+    description="""Python modules which implement support for installing particular \
  (groups of) software packages with EasyBuild.""",
     license="GPLv2",
     keywords="software build building installation installing compilation HPC scientific",
@@ -73,7 +73,6 @@ setup(
         "Intended Audience :: System Administrators",
         "License :: OSI Approved :: GNU General Public License v2 (GPLv2)",
         "Operating System :: POSIX :: Linux",
-        "Programming Language :: Python :: 2.6",
         "Programming Language :: Python :: 2.7",
         "Programming Language :: Python :: 3.5",
         "Programming Language :: Python :: 3.6",

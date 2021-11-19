@@ -265,7 +265,7 @@ class EB_CP2K(EasyBlock):
             mkdir(modincpath, parents=True)
 
             # get list of modinc source files
-            modincdir = os.path.join(imkl, self.cfg["modincprefix"], 'include')
+            modincdir = os.path.join(os.getenv('MKLROOT'), self.cfg["modincprefix"], 'include')
 
             if isinstance(self.cfg["modinc"], list):
                 modfiles = [os.path.join(modincdir, x) for x in self.cfg["modinc"]]
@@ -668,9 +668,13 @@ class EB_CP2K(EasyBlock):
         run_cmd(cmd + " clean", log_all=True, simple=True, log_output=True)
 
         # build and install
+        # compile regularly first with the default make target
+        # and only then build the library
+        run_cmd(cmd + ' all', log_all=True, simple=True, log_output=True)
+
+        # build as a library
         if self.cfg['library']:
-            cmd += ' libcp2k'
-        run_cmd(cmd + " all", log_all=True, simple=True, log_output=True)
+            run_cmd(cmd + 'libcp2k', log_all=True, simple=True, log_output=True)
 
     def test_step(self):
         """Run regression test."""
