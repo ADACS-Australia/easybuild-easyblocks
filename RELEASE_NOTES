@@ -3,7 +3,77 @@ For more detailed information, please see the git log.
 
 These release notes can also be consulted at http://easybuild.readthedocs.org/en/latest/Release_notes.html.
 
-The latest version of easybuild-easyblocks provides 242 software-specific easyblocks and 37 generic easyblocks.
+The latest version of easybuild-easyblocks provides 244 software-specific easyblocks and 37 generic easyblocks.
+
+
+v4.5.3 (February 11th 2022)
+---------------------------
+
+update/bugfix release
+
+- new software-specific easyblock for reticulate R package (#2668)
+- minor enhancements and updates, including:
+  - set CUDA target architecture(s) for GROMACS based on cuda_cc_semicolon_sep template value (#2655)
+  - add support to NAMD easyblock to opt out of building with CUDA support even if CUDA is included as dependency (#2666)
+  - update sanity check in CUDA easyblock: CUDA 11.6 no longer includes samples (#2669)
+- various bug fixes, including:
+  - also run easyblocks test suite with Python 3.8-3.10 + consistently use actions/setup-python@v2 in CI workflows (#2664)
+  - specify easybuild.io as EasyBuild homepage in setup.py (#2667)
+- other changes:
+  - remove vulnerable binaries from sanity check of HDF5, no longer installed by default with HDF5 1.10.8 (#2670)
+
+
+v4.5.2 (January 24th 2022)
+--------------------------
+
+update/bugfix release
+
+- minor enhancements and updates, including:
+  - remove necessity for license for oneAPI versions (>= 2021.x) in itac easyblock (#2492)
+  - add CUDA support in SuiteSparse easyblock (#2627)
+  - use all available cores for running Perl test suite (#2637)
+  - add option to not copy the license file for Gurobi (#2639, #2641)
+  - update AOCC easyblock to support version 3.2.0 (#2643)
+  - don't grep for specific version in --version output of Intel compiler commands for versions 2022.x (#2644)
+  - add support for enabling sanity checks for specific components in the Bundle easyblock (#2649)
+  - update Libint easyblock for LibInt v2.7.0 which requires configuring via CMake (#2650)
+  - update Mathematica easyblock for version 13 (#2652)
+  - add sanity check command for Bazel (#2653)
+  - update NAMD easyblock to allow non-system csh (#2654)
+  - enhance CUDA easyblock to create version independent pkgconfig files (#2656)
+  - add util subdirectory to $PATH for WPS (#2658)
+- various bug fixes, including:
+  - convert version numbers to stricly numerical in Siesta easyblock (#2553)
+  - fix shebang of scripts in Perl installation if installation prefix is too long (#2640)
+  - enhance IntelBase easyblock to avoid crash when $USER is not set (#2642)
+  - fix quotes in definition of default platform macro and enhance sanity check in GATE easyblock (#2645)
+  - avoid excessively long shebang line in compile script for WRF (#2648)
+  - fix checking of Intel Fortran compiler version in CP2K easyblock for recent toolchains (#2651)
+
+
+v4.5.1 (December 13th 2021)
+---------------------------
+
+update/bugfix release
+
+- new software-specific easyblock for Clang-AOMP (#2617)
+- minor enhancements and updates, including:
+  - enhance Rpm generic easyblock to support installing tarball of RPMs (by unpacking it first) + take into account (pre)installopts (#2580)
+  - add option to control use of MKL-DNN in jaxlib easyblock (#2619)
+  - update SAMtools easyblock to support installation of SAMtools 1.14 (#2620)
+  - add option to ignore PLUMED version check for GROMACS (#2621)
+  - update Inspector easyblock for recent versions (>= 2021, oneAPI versions) (#2624)
+  - enhance tbb easyblock by adding option to build Python bindings (#2626)
+  - fix patching of CMakeLists.txt in for Eigen v3.4 (#2633)
+- various bug fixes, including:
+  - update CP2K easyblock to use -D__MKL for CP2K versions newer than 2.3 (#2586)
+  - set OpenMPI configuration for ORCA sanity check (#2596)
+  - allow oversubscription in OpenMPI sanity check (#2611)
+  - set wm_* class variables in OpenFOAM easyblock constructor (to fix --sanity-check-only) (#2616)
+  - remove newline from easybuild-easyblocks package description (required to avoid installation error with setuptools>=59.0.0) (#2623)
+  - avoid patching binary files + other enhancements for MUMmer easyblock (#2630)
+  - enable build-in-installdir mode in constructor of PETSc and SLEPc easyblocks (#2631)
+  - skip netcdf4-python tests that require network connectivity (#2634)
 
 
 v4.5.0 (October 29th 2021)
