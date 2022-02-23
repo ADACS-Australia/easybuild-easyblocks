@@ -177,7 +177,7 @@ def get_system_libs_for_version(tf_version, as_valid_libs=False):
         ('astunparse', '2.2.0:'): 'astunparse_archive',
         ('cython', '2.0.0:'): 'cython',  # Part of Python EC
         ('dill', '2.4.0:'): 'dill_archive',
-        ('enum', '2.0.0:'): 'enum34_archive',  # Part of Python3
+        #('enum', '2.0.0:'): 'enum34_archive',  # Part of Python3
         ('flatbuffers', '2.4.0:'): 'flatbuffers',
         ('functools', '2.0.0:'): 'functools32_archive',  # Part of Python3
         ('gast', '2.0.0:'): 'gast_archive',
