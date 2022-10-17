@@ -1,5 +1,5 @@
 ##
-# Copyright 2017-2021 Ghent University
+# Copyright 2017-2022 Ghent University
 #
 # This file is part of EasyBuild,
 # originally created by the HPC team of Ghent University (http://ugent.be/hpc/en),
@@ -134,6 +134,7 @@ def get_system_libs_for_version(tf_version, as_valid_libs=False):
     available_system_libs = {
         # Format: (<EB name>, <version range>): <TF name>
         #         <version range> is '<min version>:<exclusive max version>'
+        ('Abseil', '2.9.0:'): 'com_google_absl',
         ('cURL', '2.0.0:'): 'curl',
         ('double-conversion', '2.0.0:'): 'double_conversion',
         ('flatbuffers', '2.0.0:'): 'flatbuffers',

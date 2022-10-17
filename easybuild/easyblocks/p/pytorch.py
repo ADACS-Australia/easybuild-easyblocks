@@ -1,5 +1,5 @@
 ##
-# Copyright 2020-2021 Ghent University
+# Copyright 2020-2022 Ghent University
 #
 # This file is part of EasyBuild,
 # originally created by the HPC team of Ghent University (http://ugent.be/hpc/en),
@@ -31,27 +31,28 @@ EasyBuild support for building and installing PyTorch, implemented as an easyblo
 import os
 import re
 import tempfile
+import easybuild.tools.environment as env
 from distutils.version import LooseVersion
 from easybuild.easyblocks.generic.pythonpackage import PythonPackage
 from easybuild.framework.easyconfig import CUSTOM
-from easybuild.tools.build_log import EasyBuildError
+from easybuild.tools.build_log import EasyBuildError, print_warning
 from easybuild.tools.config import build_option
-import easybuild.tools.environment as env
+from easybuild.tools.filetools import symlink, apply_regex_substitutions
 from easybuild.tools.modules import get_software_root, get_software_version
 from easybuild.tools.systemtools import POWER, get_cpu_architecture
-from easybuild.tools.filetools import symlink, apply_regex_substitutions
 
 
 class EB_PyTorch(PythonPackage):
-    """Support for building/installing TensorFlow."""
+    """Support for building/installing PyTorch."""
 
     @staticmethod
     def extra_options():
         extra_vars = PythonPackage.extra_options()
         extra_vars.update({
-            'excluded_tests': [{}, 'Mapping of architecture strings to list of tests to be excluded', CUSTOM],
-            'custom_opts': [[], 'List of options for the build/install command. Can be used to change the defaults ' +
-                                'set by the PyTorch EasyBlock, for example ["USE_MKLDNN=0"].', CUSTOM],
+            'custom_opts': [[], "List of options for the build/install command. Can be used to change the defaults " +
+                                "set by the PyTorch EasyBlock, for example ['USE_MKLDNN=0'].", CUSTOM],
+            'excluded_tests': [{}, "Mapping of architecture strings to list of tests to be excluded", CUSTOM],
+            'max_failed_tests': [0, "Maximum number of failing tests", CUSTOM],
         })
         extra_vars['download_dep_fail'][0] = True
         extra_vars['sanity_pip_check'][0] = True
@@ -87,9 +88,9 @@ class EB_PyTorch(PythonPackage):
             """Return True if the PyTorch version to be installed matches the version_range"""
             min_version, max_version = version_range.split(':')
             result = True
-            if min_version and pytorch_version < LooseVersion(min_version):
+            if min_version and pytorch_version < min_version:
                 result = False
-            if max_version and pytorch_version >= LooseVersion(max_version):
+            if max_version and pytorch_version >= max_version:
                 result = False
             return result
 
@@ -138,6 +139,8 @@ class EB_PyTorch(PythonPackage):
         """Custom configure procedure for PyTorch."""
         super(EB_PyTorch, self).configure_step()
 
+        pytorch_version = LooseVersion(self.version)
+
         # Gather default options. Will be checked against (and can be overwritten by) custom_opts
         options = ['PYTORCH_BUILD_VERSION=' + self.version, 'PYTORCH_BUILD_NUMBER=1']
 
@@ -152,7 +155,7 @@ class EB_PyTorch(PythonPackage):
         if get_software_root('imkl'):
             options.append('BLAS=MKL')
             options.append('INTEL_MKL_DIR=$MKLROOT')
-        elif LooseVersion(self.version) >= LooseVersion('1.9.0') and get_software_root('BLIS'):
+        elif pytorch_version >= '1.9.0' and get_software_root('BLIS'):
             options.append('BLAS=BLIS')
             options.append('BLIS_HOME=' + get_software_root('BLIS'))
             options.append('USE_MKLDNN_CBLAS=ON')
@@ -220,6 +223,9 @@ class EB_PyTorch(PythonPackage):
         if get_cpu_architecture() == POWER:
             # *NNPACK is not supported on Power, disable to avoid warnings
             options.extend(['USE_NNPACK=0', 'USE_QNNPACK=0', 'USE_PYTORCH_QNNPACK=0', 'USE_XNNPACK=0'])
+            # Breakpad (Added in 1.10, removed in 1.12.0) doesn't support PPC
+            if pytorch_version >= '1.10.0' and pytorch_version < '1.12.0':
+                options.append('USE_BREAKPAD=0')
 
         # Metal only supported on IOS which likely doesn't work with EB, so disabled
         options.append('USE_METAL=0')
@@ -253,7 +259,95 @@ class EB_PyTorch(PythonPackage):
             'python': self.python_cmd,
             'excluded_tests': ' '.join(excluded_tests)
         })
-        super(EB_PyTorch, self).test_step()
+
+        (tests_out, tests_ec) = super(EB_PyTorch, self).test_step(return_output_ec=True)
+
+        ran_tests_hits = re.findall(r"^Ran (?P<test_cnt>[0-9]+) tests in", tests_out, re.M)
+        test_cnt = 0
+        for hit in ran_tests_hits:
+            test_cnt += int(hit)
+
+        # Get matches to create clear summary report, greps for patterns like:
+        # FAILED (errors=10, skipped=190, expected failures=6)
+        # test_fx failed!
+        regex = r"^Ran (?P<test_cnt>[0-9]+) tests.*$\n\nFAILED \((?P<failure_summary>.*)\)$\n(?:^(?:(?!failed!).)*$\n)*(?P<failed_test_suite_name>.*) failed!$"  # noqa: E501
+        summary_matches = re.findall(regex, tests_out, re.M)
+
+        # Get matches to create clear summary report, greps for patterns like:
+        # ===================== 2 failed, 128 passed, 2 skipped, 2 warnings in 3.43s =====================
+        regex = r"^=+ (?P<failure_summary>.*) in [0-9]+\.*[0-9]*[a-zA-Z]* =+$\n(?P<failed_test_suite_name>.*) failed!$"
+        summary_matches_pattern2 = re.findall(regex, tests_out, re.M)
+
+        # Count failures and errors
+        def get_count_for_pattern(regex, text):
+            match = re.findall(regex, text, re.M)
+            if len(match) == 0:
+                return 0
+            elif len(match) == 1:
+                return int(match[0])
+            elif len(match) > 1:
+                # Shouldn't happen, but means something went wrong with the regular expressions.
+                # Throw warning, as the build might be fine, no need to error on this.
+                warn_msg = "Error in counting the number of test failures in the output of the PyTorch test suite.\n"
+                warn_msg += "Please check the EasyBuild log to verify the number of failures (if any) was acceptable."
+                print_warning(warn_msg)
+
+        failure_cnt = 0
+        error_cnt = 0
+        # Loop over first pattern to count failures/errors:
+        for summary in summary_matches:
+            failures = get_count_for_pattern(r"^.*(?<!expected )failures=(?P<failures>[0-9]+).*$", summary[1])
+            failure_cnt += failures
+            errs = get_count_for_pattern(r"^.*errors=(?P<errors>[0-9]+).*$", summary[1])
+            error_cnt += errs
+
+        # Loop over the second pattern to count failures/errors
+        for summary in summary_matches_pattern2:
+            failures = get_count_for_pattern(r"^.*(?P<failures>[0-9]+) failed.*$", summary[0])
+            failure_cnt += failures
+            errs = get_count_for_pattern(r"^.*(?P<errors>[0-9]+) error.*$", summary[0])
+            error_cnt += errs
+
+        # Calculate total number of unsuccesful tests
+        failed_test_cnt = failure_cnt + error_cnt
+
+        if failed_test_cnt > 0:
+            max_failed_tests = self.cfg['max_failed_tests']
+
+            failure_or_failures = 'failures' if failure_cnt > 1 else 'failure'
+            error_or_errors = 'errors' if error_cnt > 1 else 'error'
+            msg = "%d test %s, %d test %s (out of %d):\n" % (
+                failure_cnt, failure_or_failures, error_cnt, error_or_errors, test_cnt
+            )
+            for summary in summary_matches_pattern2:
+                msg += "{test_suite} ({failure_summary})\n".format(test_suite=summary[1], failure_summary=summary[0])
+            for summary in summary_matches:
+                msg += "{test_suite} ({total} total tests, {failure_summary})\n".format(
+                    test_suite=summary[2], total=summary[0], failure_summary=summary[1]
+                )
+
+            if max_failed_tests == 0:
+                raise EasyBuildError(msg)
+            else:
+                msg += '\n\n' + ' '.join([
+                    "The PyTorch test suite is known to include some flaky tests,",
+                    "which may fail depending on the specifics of the system or the context in which they are run.",
+                    "For this PyTorch installation, EasyBuild allows up to %d tests to fail." % max_failed_tests,
+                    "We recommend to double check that the failing tests listed above ",
+                    "are known to be flaky, or do not affect your intended usage of PyTorch.",
+                    "In case of doubt, reach out to the EasyBuild community (via GitHub, Slack, or mailing list).",
+                ])
+                # Print to console, the user should really be aware that we are accepting failing tests here...
+                print_warning(msg)
+
+                # Also log this warning in the file log
+                self.log.warning(msg)
+
+                if failed_test_cnt > max_failed_tests:
+                    raise EasyBuildError("Too many failed tests (%d), maximum allowed is %d",
+                                         failed_test_cnt, max_failed_tests)
+        elif tests_ec:
+            raise EasyBuildError("Test command had non-zero exit code (%s), but no failed tests found?!", tests_ec)
 
     def test_cases_step(self):
         # Make PyTorch tests not use the user home
